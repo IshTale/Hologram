@@ -1,0 +1,7 @@
+*.log
+__pycache__/
+.DS_Store
+Training Data/
+training_data_1bit/
+input_dir/
+output/
