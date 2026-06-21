@@ -1,0 +1,20 @@
+# FastCGHNet KRIA Deployment Requirements
+
+# Core inference runtime (one of the following)
+onnxruntime>=1.16.0          # CPU inference with ARM NEON optimization
+
+# Alternative runtimes (optional)
+# vitis-ai>=3.1               # AMD FPGA acceleration
+# apache-tvm>=0.14            # TVM compiler for multi-backend
+
+# Image processing
+opencv-python>=4.5.0
+Pillow>=8.0.0
+
+# NumPy for numerical computation
+numpy>=1.21.0
+
+# Optional: For training (not needed on KRIA board)
+# torch>=1.10.0
+# torchvision>=0.11.0
+# tqdm>=4.50.0

@@ -1,6 +1,11 @@
 """
 FastCGHNet: Neural network for direct hologram phase prediction
 Replaces iterative optimization with a single forward pass (~10-50ms per image)
+
+Supports:
+- GPU training (CUDA)
+- CPU training
+- AMD KRIA deployment (ARM NEON, quantized inference)
 """
 
 import torch
@@ -12,6 +17,13 @@ from torch.utils.data import Dataset, DataLoader
 import json
 from tqdm import tqdm
 import cv2
+import platform
+import os
+import time
+
+# Platform detection
+IS_ARM = platform.machine() in ['armv7l', 'aarch64', 'arm64']
+IS_KRIA = IS_ARM and os.path.exists('/proc/device-tree/model')
 
 
 class FastCGHNet(nn.Module):
@@ -21,9 +33,15 @@ class FastCGHNet(nn.Module):
     Input: grayscale image (1, 800, 1358)
     Output: phase hologram (1, 800, 1358) in range [0, 2π]
     """
-    def __init__(self, in_channels=1, out_channels=1):
+    def __init__(self, in_channels=1, out_channels=1, lite=False):
+        """
+        Args:
+            in_channels: Input channels
+            out_channels: Output channels
+            lite: If True, use reduced model for ARM/KRIA deployment
+        """
         super().__init__()
-        c = 16  # Base channels
+        c = 8 if lite else 16
         
         self.encoder = nn.Sequential(
             nn.Conv2d(in_channels, c, 3, padding=1),
@@ -34,17 +52,17 @@ class FastCGHNet(nn.Module):
             nn.BatchNorm2d(c*2),
             nn.ReLU(inplace=True),
             
-            nn.Conv2d(c*2, c*4, 3, padding=1),
-            nn.BatchNorm2d(c*4),
+            nn.Conv2d(c*2, c*4 if not lite else c*2, 3, padding=1),
+            nn.BatchNorm2d(c*4 if not lite else c*2),
             nn.ReLU(inplace=True),
             
-            nn.Conv2d(c*4, c*4, 3, padding=1),
-            nn.BatchNorm2d(c*4),
+            nn.Conv2d(c*4 if not lite else c*2, c*4 if not lite else c*2, 3, padding=1),
+            nn.BatchNorm2d(c*4 if not lite else c*2),
             nn.ReLU(inplace=True),
         )
         
         self.decoder = nn.Sequential(
-            nn.Conv2d(c*4, c*2, 3, padding=1),
+            nn.Conv2d(c*4 if not lite else c*2, c*2, 3, padding=1),
             nn.BatchNorm2d(c*2),
             nn.ReLU(inplace=True),
             
@@ -53,13 +71,13 @@ class FastCGHNet(nn.Module):
             nn.ReLU(inplace=True),
             
             nn.Conv2d(c, out_channels, 3, padding=1),
-            nn.Sigmoid()  # Output in [0, 1]
+            nn.Sigmoid()
         )
     
     def forward(self, x):
         x = self.encoder(x)
         x = self.decoder(x)
-        return x * (2 * np.pi)  # Scale to [0, 2π]
+        return x * (2 * np.pi)
 
 
 class HologramDataset(Dataset):
@@ -194,6 +212,7 @@ def train_cgh_network(
     max_samples=None,
     use_quantized_data=False,
     quantized_data_dir=None,
+    lite=False,
 ):
     """
     Train FastCGHNet on hologram data.
@@ -207,21 +226,22 @@ def train_cgh_network(
         max_samples: Maximum samples to load (None = all)
         use_quantized_data: If True, use QuantizedImageDataset instead
         quantized_data_dir: Directory with 1-bit quantized images (required if use_quantized_data=True)
+        lite: If True, train lightweight model for ARM deployment
     """
     
     Path(output_dir).mkdir(exist_ok=True)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
     
-    # Create model
-    model = FastCGHNet(in_channels=1, out_channels=1).to(device)
+    model = FastCGHNet(in_channels=1, out_channels=1, lite=lite).to(device)
     print(f"Model parameters: {sum(p.numel() for p in model.parameters()):,}")
+    if lite:
+        print("(Using lite model for KRIA/ARM deployment)")
     
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
     criterion = nn.MSELoss()
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=num_epochs)
     
-    # Load dataset
     print("Loading dataset...")
     if use_quantized_data:
         if quantized_data_dir is None:
@@ -242,7 +262,6 @@ def train_cgh_network(
     print(f"Dataset size: {len(dataset)}")
     print(f"Batches per epoch: {len(dataloader)}")
     
-    # Training loop
     model.train()
     best_loss = float('inf')
     
@@ -253,14 +272,11 @@ def train_cgh_network(
         for img_batch, phase_batch in pbar:
             optimizer.zero_grad()
             
-            # Forward pass
             phase_pred = model(img_batch)
             
-            # Loss
             loss = criterion(phase_pred, phase_batch)
             epoch_loss += loss.item()
             
-            # Backward pass
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             optimizer.step()
@@ -271,7 +287,6 @@ def train_cgh_network(
         avg_loss = epoch_loss / len(dataloader)
         print(f"Epoch {epoch+1} - Avg Loss: {avg_loss:.6f}, LR: {scheduler.get_last_lr()[0]:.8f}")
         
-        # Save best model
         if avg_loss < best_loss:
             best_loss = avg_loss
             checkpoint = {
@@ -279,8 +294,10 @@ def train_cgh_network(
                 'model_state_dict': model.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
                 'loss': best_loss,
+                'lite': lite,
             }
-            checkpoint_path = Path(output_dir) / "best_model.pt"
+            model_name = "best_model_lite.pt" if lite else "best_model.pt"
+            checkpoint_path = Path(output_dir) / model_name
             torch.save(checkpoint, checkpoint_path)
             print(f"  → Saved best model to {checkpoint_path}")
     
@@ -288,24 +305,157 @@ def train_cgh_network(
     return model
 
 
+def export_onnx(
+    model_path="/Users/Ish/Hologram/models/best_model.pt",
+    output_path="/Users/Ish/Hologram/models/fastcghnet.onnx",
+    lite=False,
+):
+    """
+    Export PyTorch model to ONNX for KRIA/ARM deployment
+    
+    ONNX can be deployed with:
+    - ONNX Runtime (lightweight, cross-platform)
+    - Vitis AI (AMD FPGA acceleration)
+    - TVM (multi-backend compiler)
+    """
+    import sys
+    
+    try:
+        import onnx
+    except ImportError:
+        print("Installing onnx...")
+        os.system(f"{sys.executable} -m pip install onnx -q")
+        import onnx
+    
+    device = torch.device("cpu")
+    
+    model = FastCGHNet(in_channels=1, out_channels=1, lite=lite).to(device)
+    checkpoint = torch.load(model_path, map_location=device)
+    model.load_state_dict(checkpoint['model_state_dict'])
+    model.eval()
+    
+    print(f"Exporting model from {model_path} to ONNX...")
+    
+    dummy_input = torch.randn(1, 1, 800, 1358, device=device)
+    
+    Path(output_path).parent.mkdir(exist_ok=True)
+    
+    with torch.no_grad():
+        torch.onnx.export(
+            model,
+            dummy_input,
+            output_path,
+            input_names=['image'],
+            output_names=['phase'],
+            opset_version=13,
+            dynamic_axes={
+                'image': {0: 'batch_size'},
+                'phase': {0: 'batch_size'}
+            },
+            verbose=False,
+        )
+    
+    print(f"✓ Exported to {output_path}")
+    print(f"  Model can be deployed on KRIA using:")
+    print(f"    - ONNX Runtime: pip install onnxruntime")
+    print(f"    - Vitis AI: AMD FPGA quantization + deployment")
+    print(f"    - TVM: Apache TVM compiler for optimization")
+    
+    return output_path
+
+
+def predict_hologram_onnx(
+    image_path,
+    onnx_model_path="/Users/Ish/Hologram/models/fastcghnet.onnx",
+    output_path="/Users/Ish/Hologram/output/cgh_fast.bmp",
+):
+    """
+    Predict using ONNX Runtime (cross-platform, efficient on ARM)
+    """
+    try:
+        import onnxruntime as ort
+    except ImportError:
+        print("Installing onnxruntime...")
+        os.system("pip install onnxruntime -q")
+        import onnxruntime as ort
+    
+    from PIL import Image
+    from PLM import DeviceLibrary, CGHGenerator
+    
+    session = ort.InferenceSession(onnx_model_path)
+    
+    img_pil = Image.open(image_path).convert('L')
+    img_array = np.asarray(img_pil, dtype=np.float32) / 255.0
+    
+    if img_array.shape != (800, 1358):
+        img_array = cv2.resize(img_array, (1358, 800))
+    
+    img_array = (img_array - img_array.min()) / (img_array.max() - img_array.min() + 1e-8)
+    
+    img_input = img_array[np.newaxis, np.newaxis, :, :].astype(np.float32)
+    
+    t0 = time.time()
+    outputs = session.run(None, {'image': img_input})
+    t_pred = time.time() - t0
+    
+    phase_np = outputs[0].squeeze()
+    
+    print(f"✓ ONNX Prediction time: {t_pred*1000:.1f}ms")
+    print(f"  Phase range: [{phase_np.min():.3f}, {phase_np.max():.3f}]")
+    
+    device_lib = DeviceLibrary()
+    device_dict = device_lib.defineDevice("0.67")
+    
+    phase_disc, state_disc = CGHGenerator.discretePhase(
+        phase_np, device_dict["nLevel"], device_dict["pLevel"]
+    )
+    cgh_mapped = device_lib.formatPLM(device_dict, state_disc)
+    
+    cgh_uint8 = cv2.normalize(cgh_mapped, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
+    cv2.imwrite(output_path, cgh_uint8)
+    
+    print(f"✓ Wrote CGH to: {output_path}")
+    
+    return phase_np, cgh_mapped
+
+
 def predict_hologram(
     image_path,
     model_path="/Users/Ish/Hologram/models/best_model.pt",
     output_path="/Users/Ish/Hologram/output/cgh_fast.bmp",
+    use_onnx=None,
+    lite=False,
 ):
     """
     Fast hologram prediction using trained model
     Input: image file path
     Output: hologram phase and mapped CGH
+    
+    Args:
+        image_path: Input image
+        model_path: PyTorch model path
+        output_path: Output BMP path
+        use_onnx: If True, use ONNX Runtime (auto-detect if None and on ARM)
+        lite: Use lightweight model
     """
     from PIL import Image
     from PLM import DeviceLibrary, CGHGenerator
-    import cv2
+    
+    if use_onnx is None:
+        use_onnx = IS_ARM
+    
+    if use_onnx:
+        onnx_path = model_path.replace('.pt', '.onnx')
+        if Path(onnx_path).exists():
+            return predict_hologram_onnx(image_path, onnx_path, output_path)
+        else:
+            print(f"⚠️  ONNX model not found at {onnx_path}")
+            print(f"Export with: export_onnx('{model_path}')")
+            use_onnx = False
     
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
-    # Load model
-    model = FastCGHNet().to(device)
+    model = FastCGHNet(lite=lite).to(device)
     checkpoint = torch.load(model_path, map_location=device)
     model.load_state_dict(checkpoint['model_state_dict'])
     model.eval()
@@ -313,18 +463,14 @@ def predict_hologram(
     print(f"Loaded model from {model_path}")
     print(f"Model parameters: {sum(p.numel() for p in model.parameters()):,}")
     
-    # Load and preprocess image
     img_pil = Image.open(image_path).convert('L')
     img_array = np.asarray(img_pil, dtype=np.float32) / 255.0
     
-    # Ensure correct size
     if img_array.shape != (800, 1358):
         img_array = cv2.resize(img_array, (1358, 800))
     
     img_tensor = torch.from_numpy(img_array[np.newaxis, np.newaxis, :, :]).to(device)
     
-    # Predict
-    import time
     t0 = time.time()
     with torch.no_grad():
         phase_pred = model(img_tensor)
@@ -335,19 +481,15 @@ def predict_hologram(
     print(f"Prediction time: {t_pred*1000:.1f}ms")
     print(f"Phase range: [{phase_np.min():.3f}, {phase_np.max():.3f}]")
     
-    # Format for PLM device
     device_lib = DeviceLibrary()
     device_dict = device_lib.defineDevice("0.67")
     
-    # Quantize to 16 levels
     phase_disc, state_disc = CGHGenerator.discretePhase(
         phase_np, device_dict["nLevel"], device_dict["pLevel"]
     )
     
-    # Format for device
     cgh_mapped = device_lib.formatPLM(device_dict, state_disc)
     
-    # Save
     cgh_uint8 = cv2.normalize(cgh_mapped, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
     cv2.imwrite(output_path, cgh_uint8)
     
@@ -360,12 +502,16 @@ if __name__ == "__main__":
     import sys
     
     if len(sys.argv) > 1 and sys.argv[1] == "train":
-        # Training mode
         train_cgh_network(
             num_epochs=30,
             batch_size=2,
             max_samples=None,
         )
+    elif len(sys.argv) > 1 and sys.argv[1] == "export":
+        model_path = sys.argv[2] if len(sys.argv) > 2 else "/Users/Ish/Hologram/models/best_model.pt"
+        export_onnx(model_path)
     else:
-        # Prediction mode
-        print("FastCGHNet model ready. Use train() or predict_hologram()")
+        print("FastCGHNet model ready.")
+        print("Usage:")
+        print("  python FastCGHNet.py train              - Train model")
+        print("  python FastCGHNet.py export <model.pt> - Export to ONNX")
