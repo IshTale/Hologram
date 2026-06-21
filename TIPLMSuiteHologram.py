@@ -554,11 +554,31 @@ class CGHGenerator:
         ShiftFOV=True,
         FlipUD=False,
         FlipLR=False,
+        orderWindowWidthFraction=1.0,
+        orderWindowHeightFraction=1.0,
+        confineToOrderWindow=False,
     ):
         targets = []
         prepared_files = []
-        target_size = (DeviceDictionary["w"], DeviceDictionary["h"])
+        full_size = (DeviceDictionary["w"], DeviceDictionary["h"])
         prepared_dir = Path(preparedDir) if preparedDir is not None else None
+
+        # With a narrow order window the optimizer and recovery only ever see the
+        # central window, so fitting each source to the FULL frame crops away
+        # everything outside it ("it cuts content"). Instead, fit the whole image
+        # into the window box. The complete picture then lives inside the kept
+        # order, so each view shows the full (smaller) image WITHOUT widening the
+        # window and re-overlapping the two angular orders.
+        confine = bool(confineToOrderWindow) and (
+            float(orderWindowWidthFraction) < 0.999
+            or float(orderWindowHeightFraction) < 0.999
+        )
+        if confine:
+            box_w = max(1, int(round(min(1.0, float(orderWindowWidthFraction)) * DeviceDictionary["w"])))
+            box_h = max(1, int(round(min(1.0, float(orderWindowHeightFraction)) * DeviceDictionary["h"])))
+            prepare_size = (box_w, box_h)
+        else:
+            prepare_size = full_size
 
         for filename in filenames:
             source_path = Path(filename)
@@ -566,10 +586,10 @@ class CGHGenerator:
             if prepared_dir is not None:
                 output_path = prepared_dir / (source_path.stem + "_1358x800_1bit.bmp")
 
-            target, prepared_file = CGHGenerator.prepareOneBitImage(
+            prepared, prepared_file = CGHGenerator.prepareOneBitImage(
                 source_path,
                 outputFilename=output_path,
-                targetSize=target_size,
+                targetSize=prepare_size,
                 threshold=threshold,
                 dither=dither,
                 ditherMethod=ditherMethod,
@@ -580,6 +600,17 @@ class CGHGenerator:
                 sharpenAmount=sharpenAmount,
                 invert=invert,
             )
+
+            if confine:
+                # Center the window-sized image on a black full-resolution frame
+                # so it lands inside the central order window (which is also centered
+                # before the ShiftFOV roll below).
+                target = np.zeros((DeviceDictionary["h"], DeviceDictionary["w"]), dtype=np.float64)
+                off_y = (DeviceDictionary["h"] - prepared.shape[0]) // 2
+                off_x = (DeviceDictionary["w"] - prepared.shape[1]) // 2
+                target[off_y:off_y + prepared.shape[0], off_x:off_x + prepared.shape[1]] = prepared
+            else:
+                target = prepared
 
             if ShiftFOV:
                 target = np.roll(
@@ -680,6 +711,7 @@ class CGHGenerator:
         orderWindowFeatherFraction=0.03,
         outsideOrderWeight=0.25,
         maskRecoveredOrders=True,
+        confineTargetsToOrderWindow=True,
         showImages=False,
     ):
         if len(filenames) != 2:
@@ -723,6 +755,9 @@ class CGHGenerator:
             ShiftFOV=ShiftFOV,
             FlipUD=FlipUD,
             FlipLR=FlipLR,
+            orderWindowWidthFraction=orderWindowWidthFraction,
+            orderWindowHeightFraction=orderWindowHeightFraction,
+            confineToOrderWindow=confineTargetsToOrderWindow,
         )
 
         self.imTarget = targets[0]
@@ -1422,6 +1457,7 @@ def _build_arg_parser():
     parser.add_argument("--order-window-height-fraction", type=float, default=1.0, help="Central replay-order height to keep.")
     parser.add_argument("--order-window-feather-fraction", type=float, default=0.03, help="Soft edge size for the replay-order window.")
     parser.add_argument("--outside-order-weight", type=float, default=0.25, help="Penalty for light outside the selected replay order.")
+    parser.add_argument("--no-confine-targets", action="store_true", help="Stretch each source to the full frame instead of fitting the whole image inside the kept order window. With a narrow window this crops everything outside the window (only the central strip of each image is reconstructed).")
     parser.add_argument("--show-all-orders", action="store_true", help="Display full decoded replay planes instead of masking side orders.")
     parser.add_argument("--no-dither", action="store_true", help="Use hard thresholding instead of photo dithering.")
     parser.add_argument("--invert", action="store_true", help="Invert inputs before making 1-bit BMPs.")
@@ -1470,6 +1506,7 @@ def main():
         orderWindowFeatherFraction=args.order_window_feather_fraction,
         outsideOrderWeight=args.outside_order_weight,
         maskRecoveredOrders=not args.show_all_orders,
+        confineTargetsToOrderWindow=not args.no_confine_targets,
         showImages=False,
     )
     generator.writeCGHToFile(args.output, binary=args.binary_output)

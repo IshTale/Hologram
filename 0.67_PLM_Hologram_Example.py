@@ -19,12 +19,18 @@ RandomSeed = 123
 NumIter = 500
 ViewShiftPixels = 330  # Near image_width / 4 for maximum wrapped-order separation on the 1358-wide PLM.
 PreparedDir = "./angle_mux_prepared"
-FitMode = "stretch"  # Use the full source photo. Options: "stretch", "crop", "contain".
+FitMode = "contain"  # Preserve each photo's aspect ratio inside its order window. Options: "stretch", "crop", "contain".
 DitherMethod = "floyd_steinberg"  # Options: "floyd_steinberg", "jarvis", "atkinson", "ordered".
-OrderWindowWidthFraction = 0.62  # Keep the selected center order; raise toward 1.0 if it cuts content.
+# Keep the order window narrow enough that the two angular orders do NOT overlap:
+#   OrderWindowWidthFraction < viewShiftPixels / (image_width / 2) = 330 / 679 ~= 0.49.
+# 0.62 (the old value) violates this, so the two views bleed into each other.
+# With ConfineTargetsToOrderWindow=True the whole image is fit inside this window,
+# so a narrow window no longer "cuts content" -- do NOT raise it toward 1.0.
+OrderWindowWidthFraction = 0.38
 OrderWindowHeightFraction = 1.0
 OrderWindowFeatherFraction = 0.04
 OutsideOrderWeight = 0.25  # Pushes light away from the left/right stray orders.
+ConfineTargetsToOrderWindow = True  # Fit the whole image into the kept order window (full image per view, no overlap).
 
 if(RandomSeed is not None):
         np.random.seed(int(RandomSeed))
@@ -49,6 +55,7 @@ G.createAngleMultiplexedCGH(DeviceDictionary=D.defineDevice('0.67'), # Device Di
                             orderWindowFeatherFraction=OrderWindowFeatherFraction,
                             outsideOrderWeight=OutsideOrderWeight,
                             maskRecoveredOrders=True,
+                            confineTargetsToOrderWindow=ConfineTargetsToOrderWindow,
                             showImages=False)
 
 outputRoot = Path(ViewImage1).stem + "_TO_" + Path(ViewImage2).stem
