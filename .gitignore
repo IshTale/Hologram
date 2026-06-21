@@ -1,8 +1,25 @@
-*.log
+# Python
 __pycache__/
+*.py[cod]
+*.pyo
+
+# macOS
 .DS_Store
+
+# Generated outputs
+comparison_output/
+shift_verification/
+angle_mux_prepared/
+output/
+*_AngleMux_CGH.bmp
+*_phase_preview.png
+
+# Models (large binaries — commit only the .onnx graph, not weights)
+models/*.pt
+models/*.pth
+models/*.onnx.data
+
+# Datasets
 Training Data/
 training_data_1bit/
 input_dir/
-output/
-*.onnx

@@ -1,119 +1,173 @@
 #!/usr/bin/env python3
 """
-Quick inference script for FastCGHNet
-Use this to predict holograms in milliseconds instead of seconds of optimization
+Fast inference for FastCGHNet using ONNX Runtime.
+Falls back to PyTorch if the ONNX file is missing.
+
+Usage:
+    python fast_predict.py Bear1.png
+    python fast_predict.py Bear1.png --onnx models/fast_cgh_net.onnx --output-bmp out.bmp
 """
 
 import sys
-import torch
-import numpy as np
-from pathlib import Path
-from PIL import Image
-import cv2
+import argparse
 import time
+from pathlib import Path
 
-# Add repo to path
-sys.path.insert(0, '/Users/Ish/Hologram')
-from FastCGHNet import FastCGHNet
-from PLM import DeviceLibrary, CGHGenerator
+import numpy as np
+import cv2
+from PIL import Image
+
+# ---------------------------------------------------------------------------
+# Device resolution expected by the model / PLM
+# ---------------------------------------------------------------------------
+PLM_W, PLM_H = 1358, 800
 
 
-def fast_predict(image_path, model_path=None, output_bmp=None, output_phase=None):
-    """
-    Predict hologram instantly using neural network
-    
-    Args:
-        image_path: Input image file
-        model_path: Path to trained model (downloads/trains if needed)
-        output_bmp: Save CGH as BMP
-        output_phase: Save phase as NPY
-    
-    Returns:
-        phase_np: Predicted phase (800, 1358)
-        cgh_mapped: Device-formatted hologram
-    """
-    
+def _load_image(image_path: str) -> np.ndarray:
+    """Load image, convert to greyscale float32 [0,1], resize to PLM_H×PLM_W."""
+    img = Image.open(image_path).convert("L")
+    arr = np.asarray(img, dtype=np.float32) / 255.0
+    if arr.shape != (PLM_H, PLM_W):
+        arr = cv2.resize(arr, (PLM_W, PLM_H), interpolation=cv2.INTER_LINEAR)
+    lo, hi = arr.min(), arr.max()
+    arr = (arr - lo) / (hi - lo + 1e-8)
+    return arr
+
+
+# ---------------------------------------------------------------------------
+# ONNX Runtime inference
+# ---------------------------------------------------------------------------
+def predict_onnx(image_path: str, onnx_path: str) -> np.ndarray:
+    """Run a single image through the ONNX model and return the phase map."""
+    import onnxruntime as ort
+
+    providers = ort.get_available_providers()
+    # Prefer CUDA if present, otherwise CPU
+    preferred = ["CUDAExecutionProvider", "CPUExecutionProvider"]
+    active = [p for p in preferred if p in providers]
+    print(f"  ORT providers available : {providers}")
+    print(f"  Using                   : {active}")
+
+    sess = ort.InferenceSession(onnx_path, providers=active)
+    inp_name = sess.get_inputs()[0].name
+    out_name = sess.get_outputs()[0].name
+
+    arr = _load_image(image_path)                           # (H, W)
+    x   = arr[np.newaxis, np.newaxis, :, :].astype(np.float32)  # (1,1,H,W)
+
+    t0     = time.perf_counter()
+    result = sess.run([out_name], {inp_name: x})[0]
+    elapsed = time.perf_counter() - t0
+
+    phase = result.squeeze()                                # (H, W)
+    print(f"  ORT inference time      : {elapsed * 1000:.1f} ms")
+    return phase
+
+
+# ---------------------------------------------------------------------------
+# PyTorch fallback
+# ---------------------------------------------------------------------------
+def predict_pytorch(image_path: str, pt_path: str) -> np.ndarray:
+    import torch
+    sys.path.insert(0, str(Path(__file__).parent))
+    from FastCGHNet import FastCGHNet
+
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    
-    # Load model
-    if model_path is None:
-        model_path = "/Users/Ish/Hologram/models/best_model.pt"
-    
-    model_path = Path(model_path)
-    if not model_path.exists():
-        print(f"⚠️  Model not found at {model_path}")
-        print("Train with: python FastCGHNet.py train")
-        return None, None
-    
-    model = FastCGHNet().to(device)
-    checkpoint = torch.load(model_path, map_location=device)
-    model.load_state_dict(checkpoint['model_state_dict'])
+    model  = FastCGHNet().to(device)
+    ckpt   = torch.load(pt_path, map_location=device)
+    model.load_state_dict(ckpt["model_state_dict"])
     model.eval()
-    
-    print(f"✓ Loaded model from {model_path}")
-    
-    # Load and preprocess image
-    img_pil = Image.open(image_path).convert('L')
-    img_array = np.asarray(img_pil, dtype=np.float32) / 255.0
-    
-    # Resize to device size
-    if img_array.shape != (800, 1358):
-        print(f"  Resizing from {img_array.shape} to (800, 1358)")
-        img_array = cv2.resize(img_array, (1358, 800), interpolation=cv2.INTER_LINEAR)
-    
-    # Normalize
-    img_array = (img_array - img_array.min()) / (img_array.max() - img_array.min() + 1e-8)
-    
-    img_tensor = torch.from_numpy(img_array[np.newaxis, np.newaxis, :, :]).to(device)
-    
-    # Predict
-    print(f"Predicting hologram phase...")
-    t0 = time.time()
+    print(f"  PyTorch device          : {device}")
+
+    arr = _load_image(image_path)
+    x   = torch.from_numpy(arr[np.newaxis, np.newaxis, :, :]).to(device)
+
+    t0 = time.perf_counter()
     with torch.no_grad():
-        phase_pred = model(img_tensor)
-    t_pred = time.time() - t0
-    
-    phase_np = phase_pred.squeeze().cpu().numpy()
-    
-    print(f"✓ Prediction time: {t_pred*1000:.1f}ms (vs ~20s for iterative)")
-    print(f"  Phase range: [{phase_np.min():.3f}, {phase_np.max():.3f}]")
-    
-    # Format for device
-    device_lib = DeviceLibrary()
-    device_dict = device_lib.defineDevice("0.67")
-    
-    phase_disc, state_disc = CGHGenerator.discretePhase(
-        phase_np, device_dict["nLevel"], device_dict["pLevel"]
-    )
-    cgh_mapped = device_lib.formatPLM(device_dict, state_disc)
-    
-    # Save outputs
-    if output_bmp:
-        cgh_uint8 = cv2.normalize(cgh_mapped, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
-        cv2.imwrite(output_bmp, cgh_uint8)
-        print(f"✓ Wrote CGH BMP: {output_bmp}")
-    
-    if output_phase:
-        np.save(output_phase, phase_np)
-        print(f"✓ Wrote phase: {output_phase}")
-    
-    return phase_np, cgh_mapped
+        phase_t = model(x)
+    elapsed = time.perf_counter() - t0
+
+    phase = phase_t.squeeze().cpu().numpy()
+    print(f"  PyTorch inference time  : {elapsed * 1000:.1f} ms")
+    return phase
+
+
+# ---------------------------------------------------------------------------
+# Optional: map phase → device BMP via TIPLMSuiteHologram helpers
+# ---------------------------------------------------------------------------
+def _phase_to_bmp(phase: np.ndarray, output_bmp: str) -> None:
+    try:
+        sys.path.insert(0, str(Path(__file__).parent))
+        from TIPLMSuiteHologram import DeviceLibrary, CGHGenerator
+        device_lib  = DeviceLibrary()
+        device_dict = device_lib.defineDevice("0.67")
+        phase_disc, state_disc = CGHGenerator.discretePhase(
+            phase, device_dict["nLevel"], device_dict["pLevel"]
+        )
+        cgh_mapped = device_lib.formatPLM(device_dict, state_disc)
+        cgh_u8     = cv2.normalize(cgh_mapped, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
+        cv2.imwrite(output_bmp, cgh_u8)
+        print(f"  Saved device BMP        : {output_bmp}")
+    except Exception as e:
+        # Fallback: just save the normalised phase as a grey PNG
+        fallback = str(output_bmp).replace(".bmp", "_phase.png")
+        phase_u8 = ((phase - phase.min()) / (phase.max() - phase.min() + 1e-8) * 255).astype(np.uint8)
+        cv2.imwrite(fallback, phase_u8)
+        print(f"  Device map failed ({e}); saved raw phase: {fallback}")
+
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+def main():
+    parser = argparse.ArgumentParser(description="FastCGHNet ONNX inference")
+    parser.add_argument("image",                              help="Input image (PNG/JPG/BMP)")
+    parser.add_argument("--onnx",   default="models/fast_cgh_net.onnx",
+                        help="ONNX model path (default: models/fast_cgh_net.onnx)")
+    parser.add_argument("--model",  default="models/best_model.pt",
+                        help="PyTorch fallback model (used only when ONNX is missing)")
+    parser.add_argument("--output-bmp",   dest="output_bmp",   help="Save CGH as BMP")
+    parser.add_argument("--output-phase", dest="output_phase", help="Save raw phase as .npy")
+    args = parser.parse_args()
+
+    image_path = args.image
+    onnx_path  = Path(args.onnx)
+    pt_path    = Path(args.model)
+
+    print(f"\nFastCGHNet ONNX inference")
+    print(f"  Image : {image_path}")
+
+    # ---- choose backend ------------------------------------------------
+    if onnx_path.exists():
+        print(f"  Model : {onnx_path}  [ONNX Runtime]")
+        phase = predict_onnx(image_path, str(onnx_path))
+    elif pt_path.exists():
+        print(f"  ONNX not found at {onnx_path}; falling back to PyTorch: {pt_path}")
+        phase = predict_pytorch(image_path, str(pt_path))
+    else:
+        sys.exit(f"No model found. Expected ONNX at '{onnx_path}' or PyTorch at '{pt_path}'.\n"
+                 "Export ONNX with: python FastCGHNet.py export")
+
+    print(f"  Phase range             : [{phase.min():.4f}, {phase.max():.4f}]")
+    print(f"  Phase shape             : {phase.shape}")
+
+    # ---- save outputs --------------------------------------------------
+    if args.output_bmp:
+        _phase_to_bmp(phase, args.output_bmp)
+
+    if args.output_phase:
+        np.save(args.output_phase, phase)
+        print(f"  Saved phase .npy        : {args.output_phase}")
+
+    if not args.output_bmp and not args.output_phase:
+        # Default: save a quick preview PNG next to the input image
+        preview = Path(image_path).stem + "_phase_preview.png"
+        phase_u8 = ((phase - phase.min()) / (phase.max() - phase.min() + 1e-8) * 255).astype(np.uint8)
+        cv2.imwrite(preview, phase_u8)
+        print(f"  Saved preview           : {preview}")
+
+    print("\nDone.")
 
 
 if __name__ == "__main__":
-    import argparse
-    
-    parser = argparse.ArgumentParser(description="Fast hologram prediction with neural network")
-    parser.add_argument("image", help="Input image file")
-    parser.add_argument("--model", default="/Users/Ish/Hologram/models/best_model.pt", help="Model path")
-    parser.add_argument("--output-bmp", help="Save CGH as BMP")
-    parser.add_argument("--output-phase", help="Save phase as NPY")
-    
-    args = parser.parse_args()
-    
-    fast_predict(
-        args.image,
-        model_path=args.model,
-        output_bmp=args.output_bmp,
-        output_phase=args.output_phase,
-    )
+    main()
