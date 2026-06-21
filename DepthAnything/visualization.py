@@ -2,7 +2,8 @@ import cv2
 
 
 class Visualizer:
-    def show(self, frame, depth_map, layers, fps):
+    def show(self, frame, depth_map, layers, fps, prefix=""):
+        prefix = f"{prefix} " if prefix else ""
         display_frame = frame.copy()
         depth_color = cv2.applyColorMap(depth_map, cv2.COLORMAP_JET)
 
@@ -16,8 +17,8 @@ class Visualizer:
             2
         )
 
-        cv2.imshow("Camera Feed", display_frame)
-        cv2.imshow("Depth Map", depth_color)
+        cv2.imshow(f"{prefix}Camera Feed", display_frame)
+        cv2.imshow(f"{prefix}Depth Map", depth_color)
 
         for i, layer in enumerate(layers):
-            cv2.imshow(f"Depth Layer {i + 1}", layer)
+            cv2.imshow(f"{prefix}Depth Layer {i + 1}", layer)

@@ -2,7 +2,27 @@ import cv2
 import torch
 import numpy as np
 from PIL import Image
-from transformers import AutoImageProcessor, AutoModelForDepthEstimation
+from transformers import AutoImageProcessor, AutoModelForDepthEstimation, AutoProcessor
+
+
+def _load_model_assets(repo_id):
+    try:
+        processor = AutoImageProcessor.from_pretrained(repo_id, local_files_only=False)
+        model = AutoModelForDepthEstimation.from_pretrained(repo_id, local_files_only=False)
+        return processor, model
+    except Exception as e:
+        print(f"Warning: failed to load HF model assets from {repo_id}: {e}")
+        try:
+            processor = AutoProcessor.from_pretrained(repo_id, local_files_only=False)
+            model = AutoModelForDepthEstimation.from_pretrained(repo_id, local_files_only=False)
+            return processor, model
+        except Exception as inner_e:
+            raise RuntimeError(
+                f"Unable to load Depth Anything V2 from '{repo_id}'. "
+                "Ensure you have network access, a valid HF_TOKEN if needed, "
+                "and no local directory named 'depth-anything' or 'Depth-Anything-V2-Small-hf' "
+                "in your current working directory. Original error: {inner_e}"
+            ) from inner_e
 
 
 class DepthEstimator:
@@ -16,11 +36,7 @@ class DepthEstimator:
             torch.backends.cudnn.benchmark = True
             torch.set_float32_matmul_precision("high")
 
-        self.processor = AutoImageProcessor.from_pretrained(
-            "depth-anything/Depth-Anything-V2-Small-hf"
-        )
-
-        self.model = AutoModelForDepthEstimation.from_pretrained(
+        self.processor, self.model = _load_model_assets(
             "depth-anything/Depth-Anything-V2-Small-hf"
         )
 
