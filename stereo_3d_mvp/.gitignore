@@ -1,0 +1,23 @@
+# Python virtual env (308 MB)
+.venv/
+__pycache__/
+*.pyc
+
+# Calibration capture images + generated, rig-specific calibration
+calibration_pairs/
+stereo_calibration.npz
+
+# Auto-downloaded model weights (selfie_segmenter.tflite, etc.)
+models/
+*.tflite
+*.onnx
+
+# Generated outputs
+fused_view_output/
+raw_depth_mask_output/
+*.ply
+*.obj
+rectified_preview.png
+
+# OS
+.DS_Store
