@@ -503,10 +503,14 @@ class CGHGenerator:
             )
             return
 
-        if sep_x <= support_x and sep_y <= support_y:
+        # Each window has support radius `support_x`. Two windows at ±(sep_x/2) overlap
+        # when support_x > sep_x/2, i.e. when sep_x < 2 * support_x.
+        if sep_x < 2 * support_x and sep_y < 2 * support_y:
             warnings.warn(
                 "Angle-multiplexed view carriers overlap after Fourier wrap-around "
-                f"(separation x/y = {sep_x:.1f}/{sep_y:.1f} pixels). Reduce the order window "
+                f"(separation x/y = {sep_x:.1f}/{sep_y:.1f} pixels, "
+                f"window support x/y = {support_x:.1f}/{support_y:.1f} pixels). "
+                "Reduce orderWindowWidthFraction/orderWindowHeightFraction, "
                 "or use a symmetric viewShiftPixels near image_width / 4.",
                 RuntimeWarning,
                 stacklevel=3,
@@ -671,7 +675,7 @@ class CGHGenerator:
         FlipUD=True,
         FlipLR=False,
         ShiftFOV=True,
-        orderWindowWidthFraction=0.62,
+        orderWindowWidthFraction=0.38,
         orderWindowHeightFraction=1.0,
         orderWindowFeatherFraction=0.03,
         outsideOrderWeight=0.25,
@@ -1414,7 +1418,7 @@ def _build_arg_parser():
     parser.add_argument("--white-percentile", type=float, default=99.0, help="High percentile mapped to white before dithering.")
     parser.add_argument("--gamma", type=float, default=0.9, help="Tone gamma before dithering. Lower brightens midtones.")
     parser.add_argument("--sharpen-amount", type=float, default=0.35, help="Unsharp mask amount before dithering.")
-    parser.add_argument("--order-window-width-fraction", type=float, default=0.62, help="Central replay-order width to keep. Use < 1 to hide/suppress left and right orders.")
+    parser.add_argument("--order-window-width-fraction", type=float, default=0.38, help="Central replay-order width to keep. Use < 1 to hide/suppress left and right orders. Must satisfy: widthFraction < viewShiftPixels / (image_width / 2) to avoid cross-talk between views.")
     parser.add_argument("--order-window-height-fraction", type=float, default=1.0, help="Central replay-order height to keep.")
     parser.add_argument("--order-window-feather-fraction", type=float, default=0.03, help="Soft edge size for the replay-order window.")
     parser.add_argument("--outside-order-weight", type=float, default=0.25, help="Penalty for light outside the selected replay order.")

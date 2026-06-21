@@ -320,13 +320,7 @@ def export_onnx(
     """
     import sys
     
-    try:
-        import onnx
-    except ImportError:
-        print("Installing onnx...")
-        os.system(f"{sys.executable} -m pip install onnx -q")
-        import onnx
-    
+    import onnx
     device = torch.device("cpu")
     
     model = FastCGHNet(in_channels=1, out_channels=1, lite=lite).to(device)
@@ -372,13 +366,8 @@ def predict_hologram_onnx(
     """
     Predict using ONNX Runtime (cross-platform, efficient on ARM)
     """
-    try:
-        import onnxruntime as ort
-    except ImportError:
-        print("Installing onnxruntime...")
-        os.system("pip install onnxruntime -q")
-        import onnxruntime as ort
-    
+    import onnxruntime as ort
+
     from PIL import Image
     from PLM import DeviceLibrary, CGHGenerator
     
@@ -421,8 +410,8 @@ def predict_hologram_onnx(
 
 def predict_hologram(
     image_path,
-    model_path="/Users/Ish/Hologram/models/best_model.pt",
-    output_path="/Users/Ish/Hologram/output/cgh_fast.bmp",
+    model_path="models/best_model.pt",
+    output_path="output/cgh_fast.bmp",
     use_onnx=None,
     lite=False,
 ):
