@@ -33,7 +33,7 @@ class FastCGHNet(nn.Module):
     Output is a continuous, unbounded phase map (radians). We do NOT bound it with
     a Sigmoid because exp(1j*phase) is periodic, so any real value is a valid phase.
     """
-    def __init__(self, in_channels=1, out_channels=1, features=[32, 64, 128, 256]):
+    def __init__(self, in_channels=1, out_channels=1, features=[16, 32, 64, 128]):
         super().__init__()
         self.ups = nn.ModuleList()
         self.downs = nn.ModuleList()
