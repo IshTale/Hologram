@@ -27,6 +27,66 @@ class DoubleConv(nn.Module):
         return self.conv(x)
 
 
+class SpectralConv2d(nn.Module):
+    """
+    Fourier Neural Operator spectral convolution layer.
+    Performs convolution in the frequency domain using learnable complex weights.
+    """
+    def __init__(self, in_channels, out_channels, modes1, modes2):
+        super(SpectralConv2d, self).__init__()
+        self.in_channels = in_channels
+        self.out_channels = out_channels
+        
+        self.modes1 = modes1 
+        self.modes2 = modes2
+
+        self.scale = (1 / (in_channels * out_channels))
+        self.weights1 = nn.Parameter(self.scale * torch.rand(in_channels, out_channels, self.modes1, self.modes2, dtype=torch.cfloat))
+        self.weights2 = nn.Parameter(self.scale * torch.rand(in_channels, out_channels, self.modes1, self.modes2, dtype=torch.cfloat))
+
+    def complex_mult2d(self, input, weight):
+        return torch.einsum("bixy,ioxy->boxy", input, weight)
+
+    def forward(self, x):
+        batchsize = x.shape[0]
+        
+        x_ft = torch.fft.rfft2(x)
+        
+        out_ft = torch.zeros(batchsize, self.out_channels, x.size(-2), x.size(-1)//2 + 1, dtype=torch.cfloat, device=x.device)
+        
+        out_ft[:, :, :self.modes1, :self.modes2] = \
+            self.complex_mult2d(x_ft[:, :, :self.modes1, :self.modes2], self.weights1)
+        out_ft[:, :, -self.modes1:, :self.modes2] = \
+            self.complex_mult2d(x_ft[:, :, -self.modes1:, :self.modes2], self.weights2)
+
+        # Pad to full output size and inverse transform
+        x = torch.fft.irfft2(out_ft, s=(x.size(-2), x.size(-1)))
+        
+        # If output channels differ from input, handle dimension mismatch
+        if x.shape[1] != self.out_channels:
+            x = x[:, :self.out_channels, :, :]
+        
+        return x
+
+
+class FNOBlock(nn.Module):
+    """
+    FNO block combining spectral and spatial convolutions with residual connection.
+    Spectral path captures long-range frequency dependencies; spatial path acts as skip connection.
+    """
+    def __init__(self, channels, modes1=16, modes2=16):
+        super().__init__()
+        self.spectral_conv = SpectralConv2d(channels, channels, modes1, modes2)
+        self.spatial_conv = nn.Conv2d(channels, channels, kernel_size=1)
+        self.norm = nn.BatchNorm2d(channels)
+        self.activation = nn.GELU()
+
+    def forward(self, x):
+        x_spectral = self.spectral_conv(x)
+        x_spatial = self.spatial_conv(x)
+        return self.activation(self.norm(x_spectral + x_spatial))
+
+
 class FastCGHNet(nn.Module):
     """
     U-Net for direct image-to-phase hologram prediction.
@@ -44,8 +104,15 @@ class FastCGHNet(nn.Module):
             self.downs.append(DoubleConv(in_channels, feature))
             in_channels = feature
 
-        # Bottleneck
-        self.bottleneck = DoubleConv(features[-1], features[-1]*2)
+        # Bottleneck with FNO (Fourier Neural Operator)
+        # At this point in the encoder, feature map is (25, 42), so use modes1=12, modes2=20
+        bottleneck_channels = features[-1] * 2
+        self.channel_expand = nn.Conv2d(features[-1], bottleneck_channels, kernel_size=1)
+        self.bottleneck = nn.Sequential(
+            FNOBlock(bottleneck_channels, modes1=12, modes2=20),
+            FNOBlock(bottleneck_channels, modes1=12, modes2=20),
+            FNOBlock(bottleneck_channels, modes1=12, modes2=20)
+        )
 
         # Up part of UNET
         for i in range(len(features)):
@@ -63,6 +130,7 @@ class FastCGHNet(nn.Module):
             skip_connections.append(x)
             x = self.pool(x)
 
+        x = self.channel_expand(x)
         x = self.bottleneck(x)
         skip_connections = skip_connections[::-1]
 

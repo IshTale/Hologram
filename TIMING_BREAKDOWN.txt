@@ -1,0 +1,243 @@
+╔════════════════════════════════════════════════════════════════════════════════╗
+║              HOW MUCH TIME IS SPENT IN HYBRID OPTIMIZATION?                    ║
+║                                                                                ║
+║              Analysis: CNN Inference + PLM Refinement Time Costs               ║
+╚════════════════════════════════════════════════════════════════════════════════╝
+
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ QUICK ANSWER                                                                │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+For CNN + 20 PLM iterations (sweet spot for interactive use):
+  ├─ CNN inference:     713 ms  (11% of total time)
+  ├─ PLM optimization: 5,968 ms (89% of total time)
+  └─ TOTAL:            6,681 ms
+
+→ 89% of time is spent optimizing in PLM
+→ CNN overhead is negligible compared to optimization
+
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ TIME COST BY CONFIGURATION                                                  │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+CNN Only (no optimization):
+  ┌───────────────────────────────────────────┐
+  │ CNN: 713 ms                               │
+  │ PLM: —                                    │
+  ├───────────────────────────────────────────┤
+  │ TOTAL: 713 ms                    (81x)    │
+  │ Quality: 2.37 dB                          │
+  └───────────────────────────────────────────┘
+
+CNN + 10 PLM iterations (fast preview):
+  ┌───────────────────────────────────────────┐
+  │ CNN: 713 ms  (18%)                        │
+  │ PLM: 3,943 ms (82%)  ███████████████████  │
+  ├───────────────────────────────────────────┤
+  │ TOTAL: 4,656 ms                  (11x)    │
+  │ Quality: 4.29 dB                          │
+  │ Gain: +1.92 dB (50% recovery)             │
+  └───────────────────────────────────────────┘
+
+CNN + 20 PLM iterations (interactive sweet spot):
+  ┌───────────────────────────────────────────┐
+  │ CNN: 713 ms  (11%)                        │
+  │ PLM: 5,968 ms (89%) ████████████████████ │
+  ├───────────────────────────────────────────┤
+  │ TOTAL: 6,681 ms                  (7.7x)   │
+  │ Quality: 4.93 dB                          │
+  │ Gain: +2.56 dB (65% recovery)             │
+  │ → Users wait 6-7 seconds for improvement  │
+  └───────────────────────────────────────────┘
+
+CNN + 30 PLM iterations (good balance):
+  ┌───────────────────────────────────────────┐
+  │ CNN: 713 ms  (8%)                         │
+  │ PLM: 8,417 ms (92%) ████████████████████ │
+  ├───────────────────────────────────────────┤
+  │ TOTAL: 9,130 ms                  (5.7x)   │
+  │ Quality: 5.24 dB                          │
+  │ Gain: +2.87 dB (73% recovery)             │
+  └───────────────────────────────────────────┘
+
+CNN + 50 PLM iterations (high-quality):
+  ┌───────────────────────────────────────────┐
+  │ CNN: 713 ms  (5%)                         │
+  │ PLM: 13,296 ms (95%) ██████████████████ │
+  ├───────────────────────────────────────────┤
+  │ TOTAL: 14,009 ms                 (3.7x)   │
+  │ Quality: 5.68 dB                          │
+  │ Gain: +3.31 dB (84% recovery)             │
+  │ → Still 2.5x faster than full PLM         │
+  └───────────────────────────────────────────┘
+
+Full PLM (200 iterations, reference):
+  ┌───────────────────────────────────────────┐
+  │ CNN: —                                    │
+  │ PLM: 51,058 ms (100%) ████████████████── │
+  ├───────────────────────────────────────────┤
+  │ TOTAL: 51,058 ms               (1.0x)     │
+  │ Quality: 6.30 dB                          │
+  │ Gain: +3.93 dB (100% recovery)            │
+  └───────────────────────────────────────────┘
+
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ COST PER OPTIMIZATION ITERATION                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+Number of      Total PLM    Time per      Quality Gain per Second
+Iterations     Time         Iteration     of Optimization
+───────────    ──────────   ────────      ──────────────────────
+  10           3,943 ms     394 ms        +0.49 dB/sec    (fastest!)
+  20           5,968 ms     298 ms        +0.43 dB/sec
+  30           8,417 ms     281 ms        +0.34 dB/sec
+  50          13,296 ms     266 ms        +0.25 dB/sec
+  75          19,280 ms     257 ms        +0.18 dB/sec
+ 100          25,496 ms     255 ms        +0.14 dB/sec
+ 150          38,045 ms     254 ms        +0.10 dB/sec
+ 200          51,058 ms     255 ms        +0.08 dB/sec
+
+→ Early iterations are most expensive (~400 ms each)
+→ Later iterations are more efficient (~250 ms each)
+→ Quality gain per second drops by 80% from 10 to 200 iterations
+
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ WHERE THE TIME GOES: PLM vs CNN                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+Configuration               CNN %    Optimization %    Total Time
+─────────────────────      ────────  ──────────────    ──────────
+CNN only                    100%     0%                 713 ms
+CNN + 10 iter PLM            15%     85%                4,656 ms
+CNN + 20 iter PLM            11%     89%                6,681 ms
+CNN + 30 iter PLM             8%     92%                9,130 ms
+CNN + 50 iter PLM             5%     95%               14,009 ms
+CNN + 100 iter PLM            3%     97%               26,209 ms
+CNN + 200 iter PLM            1%     99%               51,771 ms
+
+→ For any serious optimization (>10 iterations), CNN overhead becomes <15%
+→ Optimization time dominates (>85% of total)
+→ CNN is not the bottleneck in hybrid approaches
+
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ QUALITY RECOVERY vs TIME INVESTED                                           │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+Baseline (CNN only):        2.37 dB
+Target (Full PLM):          6.30 dB
+Gap to fill:                3.93 dB
+
+Configuration        Time Invested    Quality Recovered    % of Gap    Efficiency
+─────────────────    ──────────────   ─────────────────    ────────    ──────────
+CNN + 10 iter         4.7 seconds     +1.92 dB (48%)       49%         0.41 dB/sec
+CNN + 20 iter         6.7 seconds     +2.56 dB (65%)       65%         0.38 dB/sec ← SWEET SPOT
+CNN + 30 iter         9.1 seconds     +2.87 dB (73%)       73%         0.32 dB/sec
+CNN + 50 iter        14.0 seconds     +3.31 dB (84%)       84%         0.24 dB/sec
+CNN + 100 iter       26.2 seconds     +3.66 dB (93%)       93%         0.14 dB/sec
+CNN + 200 iter       51.8 seconds     +3.93 dB (100%)      100%        0.08 dB/sec
+
+Key insight: CNN + 20 iterations gives the best time/quality ratio for interactive use
+
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ PRACTICAL TIMELINE FOR DIFFERENT USE CASES                                  │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+REAL-TIME STREAMING (max 1 second per frame):
+  └─ Use CNN only (713 ms)
+     ✓ Barely fits (need to optimize further)
+     ✗ Quality is poor (2.37 dB)
+     → Recommendation: Use lighter model or GPU
+
+INTERACTIVE UI - PREVIEW MODE (show result immediately, refine in background):
+  ├─ 0 ms:        User initiates request
+  ├─ 713 ms:      Display CNN result (2.37 dB) - instant feel
+  ├─ ~4.7 sec:    Show CNN + 10 iter result (4.29 dB) - refreshed 1x
+  ├─ ~6.7 sec:    Show CNN + 20 iter result (4.93 dB) - refreshed 2x
+  └─ ~14 sec:     Show CNN + 50 iter result (5.68 dB) - final version
+     ✓ User sees improvement progressively
+     ✓ Reasonable response times (6-7 sec for interactive)
+     ✓ Option to continue waiting or use current result
+
+BATCH HIGH-QUALITY (rendering multiple images):
+  └─ Use CNN + 50 iterations (14 seconds per image)
+     ✓ Quality is very good (5.68 dB)
+     ✓ 3.7x faster than full PLM
+     ✓ Can process 3-4 images in parallel in ~50 seconds
+     ✓ Good trade-off between quality and throughput
+
+ARCHIVE/PUBLICATION (max quality):
+  └─ Use full PLM (51.8 seconds per image)
+     ✓ Absolute best quality (6.30 dB)
+     ✓ Worth the wait for important outputs
+     ✓ Only difference: +0.62 dB vs CNN + 50 iter
+     ✗ Time cost: 3.7x more
+
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ KEY TAKEAWAYS                                                               │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+1. CNN IS CHEAP RELATIVE TO OPTIMIZATION
+   • CNN inference: ~700 ms (one-time)
+   • PLM optimization: ~250-400 ms per iteration
+   • Adding CNN to hybrid costs only ~15% overhead
+
+2. EARLY ITERATIONS ARE GOLDEN
+   • First 20 iterations = 65% quality recovery
+   • Time spent: only 12% of full PLM (6.7 sec vs 51.8 sec)
+   • Efficiency: 0.43 dB per second (best bang-for-buck)
+
+3. OPTIMIZATION TIME DOMINATES
+   • For CNN + 20 iter: 89% of time is PLM, 11% is CNN
+   • Not worth optimizing CNN to be 100ms faster
+   • Worth optimizing PLM to be 1000ms faster
+
+4. SWEET SPOT IS 20 ITERATIONS FOR INTERACTIVE
+   • 6.7 seconds total (reasonable wait)
+   • 4.93 dB quality (65% of full gap recovered)
+   • Still efficient (0.43 dB/sec)
+   • Users accept 6-7 second wait for interactive app
+
+5. DIMINISHING RETURNS KICK IN FAST
+   • 10→20 iter:  +0.64 dB for +2 seconds
+   • 20→50 iter:  +0.75 dB for +7 seconds
+   • 50→100 iter: +0.35 dB for +12 seconds
+   • 100→200 iter: +0.27 dB for +25 seconds
+
+6. TIME/QUALITY EFFICIENCY PEAKS AT 10 ITERATIONS
+   • 0.001089 dB/ms best ratio
+   • But only provides 4.29 dB (50% recovery)
+   • Not practical alone; use as stepping stone
+
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ WHAT THIS MEANS FOR DESIGN                                                  │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+Design for your use case:
+
+Real-time critical?      → Accept quality loss, use CNN only
+                         → Or use GPU + lighter model
+
+Interactive UI?          → CNN + 20 iterations is perfect
+                         → Show immediate preview, start refinement
+                         → Users see progressive improvement
+
+Batch processing?        → CNN + 50 iterations is best
+                         → 3.7x faster than full, excellent quality
+                         → Good parallelism potential
+
+Publication/archive?     → Full PLM recommended
+                         → Only 0.62 dB better than CNN + 50
+                         → But if quality matters, worth the time
+
+
+═════════════════════════════════════════════════════════════════════════════════
+Test conducted: 2026-06-29 | Image: Bear2.png (1358×800) | CPU mode (no GPU)
+═════════════════════════════════════════════════════════════════════════════════

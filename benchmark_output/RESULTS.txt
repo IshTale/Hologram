@@ -1,0 +1,145 @@
+================================================================================
+CNN vs CLASSIC PLM HOLOGRAM GENERATION BENCHMARK
+================================================================================
+
+METHODOLOGY
+-----------
+Compared FastCGHNet (deep learning CNN) against classic iterative PLM approach
+(ADAM+GS) on two identical bear image inputs (Bear1.png, Bear2.png).
+
+Metrics measured:
+  1. Inference time (total milliseconds)
+  2. Reconstruction PSNR (from phase using inverse FFT)
+  3. BMP output difference (MSE, SSIM)
+  4. Speed/quality trade-off
+
+
+RESULTS SUMMARY
+===============
+
+BEAR1 (600x400 @ 1358x800 resolution):
+────────────────────────────────────────
+Inference speed:
+  CNN (FastCGHNet): 614.5 ms
+  PLM (ADAM+GS):    52066.8 ms
+  → CNN is 85x faster
+
+Reconstruction quality:
+  CNN PSNR:  2.30 dB
+  PLM PSNR:  6.10 dB
+  → CNN is 3.79 dB WORSE
+
+BMP comparison:
+  MSE:  30059.7
+  SSIM: 0.0638 (very low similarity)
+
+
+BEAR2 (600x400 @ 1358x800 resolution):
+────────────────────────────────────────
+Inference speed:
+  CNN (FastCGHNet): 631.4 ms
+  PLM (ADAM+GS):    50959.9 ms
+  → CNN is 81x faster
+
+Reconstruction quality:
+  CNN PSNR:  2.37 dB
+  PLM PSNR:  6.30 dB
+  → CNN is 3.93 dB WORSE
+
+BMP comparison:
+  MSE:  30010.9
+  SSIM: 0.0653 (very low similarity)
+
+
+KEY FINDINGS
+============
+
+1. MASSIVE SPEED IMPROVEMENT
+   ✓ CNN is ~81-85x faster than PLM
+   ✓ 50+ seconds → 0.6 seconds per image
+   ✓ Practical for real-time applications
+
+2. SIGNIFICANT QUALITY DEGRADATION
+   ✗ CNN produces holograms ~4 dB worse (in reconstruction PSNR)
+   ✗ BMP outputs show very low SSIM (0.06 ~ essentially uncorrelated)
+   ✗ Reconstruction quality: CNN ~2.3 dB vs PLM ~6.2 dB
+
+3. TRADE-OFF ASSESSMENT
+   The CNN is exchanging ~4 dB quality for 80x speedup
+   
+   Context:
+   - 1 dB change in PSNR ≈ noticeable but subtle quality difference
+   - 4 dB ≈ significant visible degradation
+   - PLM 6 dB is still modest (iterative optimization plateau at ~50 iter)
+   - CNN 2.3 dB suggests the model is struggling to learn the task
+
+
+INTERPRETATION
+===============
+
+Why is the CNN performing so poorly?
+
+1. TRAINING DATA QUALITY?
+   - Model was trained with reconstruction loss (physics-based)
+   - But CNN PSNR (2.3 dB) vs PLM (6.1 dB) shows CNN hasn't converged well
+   - Suggests: insufficient training epochs, data, or model capacity
+
+2. ARCHITECTURE LIMITATION?
+   - U-Net is standard for regression tasks
+   - 14M parameters should be enough for 800x1358 phase prediction
+   - But unbounded phase regression is inherently ill-posed
+
+3. LOSS FUNCTION vs INFERENCE MISMATCH?
+   - Training uses reconstruction loss (simulates FFT forward)
+   - But inference PSNR computed same way
+   - This suggests the training itself hasn't converged
+
+4. OVERFITTING TO TRAINING SET?
+   - Bears are test images (not in training data)
+   - CNN generalizes poorly to unseen images
+   - Model was trained on synthetic/binary data with different content
+
+
+RECOMMENDATIONS
+================
+
+To improve CNN quality:
+
+1. Train longer (more epochs - model only at epoch 15)
+2. Use more diverse training data
+3. Increase model capacity (add more features)
+4. Use curriculum learning (easy → hard targets)
+5. Validate on held-out test set (not just training loss)
+6. Consider ensemble predictions
+7. Add geometric/photometric augmentations during training
+
+Trade-off options:
+- Accept 4 dB loss for 80x speedup (real-time, streaming)
+- Use CNN for initialization + few PLM iterations (hybrid)
+- Use CNN for low-res preview, PLM for final output
+
+
+FILES GENERATED
+================
+
+benchmark_output/
+├── Bear1_CNN_bmp.png        CNN output (lower quality)
+├── Bear1_PLM_bmp.png        PLM output (reference)
+├── Bear1_diff.png           Heatmap of differences (bright = different)
+├── Bear2_CNN_bmp.png        CNN output (lower quality)
+├── Bear2_PLM_bmp.png        PLM output (reference)
+└── Bear2_diff.png           Heatmap of differences (bright = different)
+
+
+CONCLUSION
+==========
+
+FastCGHNet provides a dramatic 80x speedup but currently sacrifices ~4 dB quality.
+This is a clear case where:
+  - If you need real-time performance → Use CNN (0.6s)
+  - If you need best quality → Use PLM (50s)
+  - For balanced results → Consider hybrid approach (CNN + 10 PLM iterations)
+
+The CNN model needs more training to be truly competitive.
+
+================================================================================
